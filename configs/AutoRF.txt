@@ -1,0 +1,12 @@
+expname = AutoRF_exp_0523
+basedir = ./logs
+datadir = ../AutoRF_Data
+dataset_type = AutoRF
+
+no_batching = True
+use_viewdirs = True
+white_bkgd = False
+lrate_decay = 0
+N_samples = 64
+N_importance = 128
+N_rand = 1024
