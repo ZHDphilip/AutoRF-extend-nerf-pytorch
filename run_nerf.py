@@ -493,8 +493,8 @@ def render_rays(ray_batch,
 
 def config_parser():
 
-    import argparse
-    parser = argparse.ArgumentParser()
+    import configargparse
+    parser = configargparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True, 
                         help='config file path')
     parser.add_argument("--expname", type=str, 
