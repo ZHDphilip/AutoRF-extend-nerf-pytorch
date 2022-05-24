@@ -161,3 +161,15 @@ However, if you find this implementation or pre-trained models helpful, please c
   year={2020}
 }
 ```
+
+
+custom dataset
+ - train
+   - imgs [list of images as np arrays]
+   - masks [list of occupancy masks as np arrays]
+   - poses [list of transformation mat as np arrays]
+   - H [list of image widths as float]
+   - W [list of image heights as float]
+   - K [list of cam intrinsic as float]
+ - val
+ - test
