@@ -18,6 +18,7 @@ from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
+from load_self import load_custorm_dataset
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -492,8 +493,8 @@ def render_rays(ray_batch,
 
 def config_parser():
 
-    import configargparse
-    parser = configargparse.ArgumentParser()
+    import argparse
+    parser = argparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True, 
                         help='config file path')
     parser.add_argument("--expname", type=str, 
@@ -674,6 +675,9 @@ def train():
         hemi_R = np.mean(np.linalg.norm(poses[:,:3,-1], axis=-1))
         near = hemi_R-1.
         far = hemi_R+1.
+    elif args.dataset_type == 'AutoRF':
+        images, poses, masks, hwf, K, i_split = load_custorm_dataset(basedir=args.datadir)
+        i_train, i_val, i_test = i_split
 
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
@@ -803,22 +807,26 @@ def train():
             target = images[img_i]
             target = torch.Tensor(target).to(device)
             pose = poses[img_i, :3,:4]
+            h = H[img_i]
+            w = W[img_i]
+            Intrinsic = K[img_i]
+            mask = masks[img_i]
 
             if N_rand is not None:
-                rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
+                rays_o, rays_d = get_rays(h, w, Intrinsic, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
 
                 if i < args.precrop_iters:
-                    dH = int(H//2 * args.precrop_frac)
-                    dW = int(W//2 * args.precrop_frac)
+                    dH = int(h//2 * args.precrop_frac)
+                    dW = int(w//2 * args.precrop_frac)
                     coords = torch.stack(
                         torch.meshgrid(
-                            torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH), 
-                            torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
+                            torch.linspace(h//2 - dH, h//2 + dH - 1, 2*dH), 
+                            torch.linspace(w//2 - dW, w//2 + dW - 1, 2*dW)
                         ), -1)
                     if i == start:
                         print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")                
                 else:
-                    coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
+                    coords = torch.stack(torch.meshgrid(torch.linspace(0, h-1, h), torch.linspace(0, w-1, w)), -1)  # (H, W, 2)
 
                 coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
                 select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
@@ -827,22 +835,24 @@ def train():
                 rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
                 batch_rays = torch.stack([rays_o, rays_d], 0)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                mask_s = mask[select_coords[:, 0], select_coords[:, 1]]
 
         #####  Core optimization loop  #####
-        rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+        rgb, disp, acc, extras = render(h, w, Intrinsic, chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True,
                                                 **render_kwargs_train)
 
         optimizer.zero_grad()
-        img_loss = img2mse(rgb, target_s)
-        trans = extras['raw'][...,-1]
-        loss = img_loss
-        psnr = mse2psnr(img_loss)
+        # img_loss = img2mse(rgb, target_s)
+        # trans = extras['raw'][...,-1]
+        # loss = img_loss
+        # psnr = mse2psnr(img_loss)
 
-        if 'rgb0' in extras:
-            img_loss0 = img2mse(extras['rgb0'], target_s)
-            loss = loss + img_loss0
-            psnr0 = mse2psnr(img_loss0)
+        # if 'rgb0' in extras:
+        #     img_loss0 = img2mse(extras['rgb0'], target_s)
+        #     loss = loss + img_loss0
+        #     psnr0 = mse2psnr(img_loss0)
+        loss = Loss_AutoRF(0.5, mask_s, target_s, rgb, acc)
 
         loss.backward()
         optimizer.step()
@@ -871,6 +881,7 @@ def train():
             }, path)
             print('Saved checkpoints at', path)
 
+        # now remove following parts for later debug
         if i%args.i_video==0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
@@ -880,25 +891,25 @@ def train():
             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
             imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
-            # if args.use_viewdirs:
-            #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
-            #     with torch.no_grad():
-            #         rgbs_still, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test)
-            #     render_kwargs_test['c2w_staticcam'] = None
-            #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
+        #     # if args.use_viewdirs:
+        #     #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
+        #     #     with torch.no_grad():
+        #     #         rgbs_still, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test)
+        #     #     render_kwargs_test['c2w_staticcam'] = None
+        #     #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
-        if i%args.i_testset==0 and i > 0:
-            testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
-            os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', poses[i_test].shape)
-            with torch.no_grad():
-                render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
-            print('Saved test set')
+        # if i%args.i_testset==0 and i > 0:
+        #     testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
+        #     os.makedirs(testsavedir, exist_ok=True)
+        #     print('test poses shape', poses[i_test].shape)
+        #     with torch.no_grad():
+        #         render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
+        #     print('Saved test set')
 
 
     
         if i%args.i_print==0:
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}")
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
             print('iter time {:.05f}'.format(dt))
